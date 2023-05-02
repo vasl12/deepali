@@ -1,21 +1,30 @@
 # Using free-form deformation model
 model:
-  name: FFD
-  stride: &stride [8, 8, 5]
+  name: SVFFD
+  transpose: False
+  # mm or pixels?
+  stride: &stride [32, 32, 32]
 # Loss terms of objective function to minimize
 energy:
-  seg: [1, MSE]
-  be: [0.005, BSplineBending, stride: *stride]
+  seg:
+    name: NMI
+    bins: 64
+
+  # be: [0.0001, BSplineBending, stride: *stride]
   # To approximate bending energy on coarser grid, use smaller stride, e.g.:
-  # be: [0.005, BSplineBending, stride: 1]
+  be: [0.001, BSplineBending, stride: 1]
 # Optimization scheme and parameters
 optim:
   name: Adam
-  step_size: 0.001
-  min_delta: -0.01
-  max_steps: 100
+  lr: 0.001
+  # step_size: 0.01
+  min_delta: -0.001
+  max_steps: 200
 # Gaussian resolution pyramid
 pyramid:
-  dims: ["x", "y"]
+  # use the 3D
+  dims: ["x", "y", "z"]
   levels: 3
-  spacing: [1.25, 1.25, 2.0]
+  spacing: [2.232, 2.232, 3.0]
+
+# take a look at the transformations level by level

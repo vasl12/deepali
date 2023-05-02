@@ -24,7 +24,6 @@ def avg_pool(
     padding: Optional[ScalarOrTuple[int]] = 0,
     ceil_mode: bool = False,
     count_include_pad: bool = True,
-    divisor_override: Optional[Scalar] = None,
 ) -> Tensor:
     r"""Average pooling of image data."""
     if not isinstance(data, Tensor):
@@ -55,7 +54,6 @@ def avg_pool(
         padding=padding,
         ceil_mode=ceil_mode,
         count_include_pad=count_include_pad,
-        divisor_override=divisor_override,  # type: ignore
     )
 
 
@@ -1037,8 +1035,6 @@ def grid_resize(
     grid = grid.resize(size_)
     if grid.shape == data.shape[2:]:
         return data
-    if mode_ in ("area", "nearest", "nearest-exact"):
-        align_corners = None
     return F.interpolate(data, size=grid.shape, mode=mode_, align_corners=align_corners)
 
 

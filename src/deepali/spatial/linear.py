@@ -7,7 +7,7 @@ import math
 from typing import Callable, Optional, Union
 
 import torch
-from torch import Size, Tensor
+from torch import Tensor
 from torch.nn import init
 
 from ..core import affine as U
@@ -42,9 +42,9 @@ class HomogeneousTransform(InvertibleParametricTransform, LinearTransform):
         super().__init__(grid, groups=groups, params=params)
 
     @property
-    def data_shape(self: HomogeneousTransform) -> Size:
+    def data_shape(self: HomogeneousTransform) -> torch.Size:
         r"""Get shape of transformation parameters tensor."""
-        return Size((self.ndim, self.ndim + 1))
+        return torch.Size((self.ndim, self.ndim + 1))
 
     def matrix_(self: HomogeneousTransform, arg: Tensor) -> HomogeneousTransform:
         r"""Set transformation matrix."""
@@ -103,9 +103,9 @@ class Translation(InvertibleParametricTransform, LinearTransform):
         super().__init__(grid, groups=groups, params=params)
 
     @property
-    def data_shape(self: Translation) -> Size:
+    def data_shape(self: Translation) -> torch.Size:
         r"""Get shape of transformation parameters tensor."""
-        return Size((self.ndim,))
+        return torch.Size((self.ndim,))
 
     def offset(self: Translation) -> Tensor:
         r"""Get current translation offset in cube units."""
@@ -176,9 +176,9 @@ class EulerRotation(InvertibleParametricTransform, LinearTransform):
         self.order = order
 
     @property
-    def data_shape(self: EulerRotation) -> Size:
+    def data_shape(self: EulerRotation) -> torch.Size:
         r"""Get shape of transformation parameters tensor."""
-        return Size((self.nangles,))
+        return torch.Size((self.nangles,))
 
     @property
     def nangles(self: EulerRotation) -> int:
@@ -257,9 +257,9 @@ class QuaternionRotation(InvertibleParametricTransform, LinearTransform):
         super().__init__(grid, groups=groups, params=params)
 
     @property
-    def data_shape(self: QuaternionRotation) -> Size:
+    def data_shape(self: QuaternionRotation) -> torch.Size:
         r"""Get shape of transformation parameters tensor."""
-        return Size((4,))
+        return torch.Size((4,))
 
     @torch.no_grad()
     def reset_parameters(self: QuaternionRotation) -> None:
@@ -351,9 +351,9 @@ class IsotropicScaling(InvertibleParametricTransform, LinearTransform):
         super().__init__(grid, groups=groups, params=params)
 
     @property
-    def data_shape(self: IsotropicScaling) -> Size:
+    def data_shape(self: IsotropicScaling) -> torch.Size:
         r"""Get shape of transformation parameters tensor."""
-        return Size((1,))
+        return torch.Size((1,))
 
     @torch.no_grad()
     def reset_parameters(self: IsotropicScaling) -> None:
@@ -437,9 +437,9 @@ class AnisotropicScaling(InvertibleParametricTransform, LinearTransform):
         super().__init__(grid, groups=groups, params=params)
 
     @property
-    def data_shape(self: AnisotropicScaling) -> Size:
+    def data_shape(self: AnisotropicScaling) -> torch.Size:
         r"""Get shape of transformation parameters tensor."""
-        return Size((self.ndim,))
+        return torch.Size((self.ndim,))
 
     @torch.no_grad()
     def reset_parameters(self: AnisotropicScaling) -> None:
@@ -524,9 +524,9 @@ class Shearing(InvertibleParametricTransform, LinearTransform):
         super().__init__(grid, groups=groups, params=params)
 
     @property
-    def data_shape(self: Shearing) -> Size:
+    def data_shape(self: Shearing) -> torch.Size:
         r"""Get shape of transformation parameters tensor."""
-        return Size((self.nangles,))
+        return torch.Size((self.nangles,))
 
     @property
     def nangles(self: Shearing) -> int:

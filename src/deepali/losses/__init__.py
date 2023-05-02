@@ -32,19 +32,14 @@ from .bspline import BSplineBending, BSplineBendingEnergy
 from .flow import Bending, BendingEnergy, BE
 from .flow import Curvature
 from .flow import Diffusion
-from .flow import Divergence
 from .flow import Elasticity
 from .flow import TotalVariation, TV
 
 from .image import PatchwiseImageLoss, PatchLoss
 from .image import Dice, DSC
 from .image import LCC, LNCC
-from .image import SLCC, WLCC
 from .image import MI, NMI
-from .image import MAE, L1ImageLoss
-from .image import HuberImageLoss
-from .image import SmoothL1ImageLoss
-from .image import MSE, L2ImageLoss
+from .image import MSE
 from .image import SSD
 
 from .params import L1Norm, L1_Norm
@@ -80,14 +75,10 @@ __all__ = (
     "ClosestPointDistance",
     "CPD",
     "Curvature",
-    "Dice",
+    "Dice"
     "Diffusion",
-    "Divergence",
     "DSC",
     "Elasticity",
-    "HuberImageLoss",
-    "L1ImageLoss",
-    "L2ImageLoss",
     "L1Norm",
     "L1_Norm",
     "L2Norm",
@@ -96,17 +87,13 @@ __all__ = (
     "LPD",
     "LCC",
     "LNCC",
-    "MAE",
     "MI",
     "MSE",
     "NMI",
-    "SLCC",
-    "SmoothL1ImageLoss",
     "Sparsity",
     "SSD",
     "TotalVariation",
     "TV",
-    "WLCC",
     # Factory function
     "create_loss",
     "new_loss",

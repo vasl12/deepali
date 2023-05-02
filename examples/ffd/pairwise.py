@@ -268,9 +268,9 @@ def read_images(
     if isinstance(sample, (Path, str)):
         sample = {"img": sample}
     img_path = sample.get("img")
-    seg_path = sample.get("seg")
-    sdf_path = sample.get("sdf")
-    for path in (img_path, seg_path, sdf_path):
+    # seg_path = sample.get("seg")
+    # sdf_path = sample.get("sdf")
+    for path in [img_path]:
         if not path:
             continue
         grid = Grid.from_file(path).align_corners_(True)
@@ -283,23 +283,23 @@ def read_images(
     if "img" in names:
         temp = Image.read(img_path, dtype=dtype, device=device)
         data = append_data(data, channels, "img", temp.tensor())
-    if "seg" in names:
-        if seg_path is None:
-            raise ValueError("Missing segmentation label image file path")
-        temp = Image.read(seg_path, dtype=torch.int64, device=device)
-        temp_grid = temp.grid()
-        num_classes = int(temp.max()) + 1
-        temp = temp.tensor().unsqueeze(0)
-        temp = U.as_one_hot_tensor(temp, num_classes).to(dtype=dtype)
-        temp = temp.squeeze(0)
-        temp = Image(temp, grid=temp_grid).sample(grid)
-        data = append_data(data, channels, "seg", temp.tensor())
-    if "sdf" in names:
-        if sdf_path is None:
-            raise ValueError("Missing segmentation boundary signed distance field file path")
-        temp = Image.read(sdf_path, dtype=dtype, device=device)
-        temp = temp.sample(grid)
-        data = append_data(data, channels, "sdf", temp.tensor())
+    # if "seg" in names:
+    #     if seg_path is None:
+    #         raise ValueError("Missing segmentation label image file path")
+    #     temp = Image.read(seg_path, dtype=torch.int64, device=device)
+    #     temp_grid = temp.grid()
+    #     num_classes = int(temp.max()) + 1
+    #     temp = temp.tensor().unsqueeze(0)
+    #     temp = U.as_one_hot_tensor(temp, num_classes).to(dtype=dtype)
+    #     temp = temp.squeeze(0)
+    #     temp = Image(temp, grid=temp_grid).sample(grid)
+    #     data = append_data(data, channels, "seg", temp.tensor())
+    # if "sdf" in names:
+    #     if sdf_path is None:
+    #         raise ValueError("Missing segmentation boundary signed distance field file path")
+    #     temp = Image.read(sdf_path, dtype=dtype, device=device)
+    #     temp = temp.sample(grid)
+    #     data = append_data(data, channels, "sdf", temp.tensor())
     if data is None:
         if img_path is None:
             raise ValueError("Missing intensity image file path")
@@ -307,6 +307,55 @@ def read_images(
         channels = {"img": (0, 1)}
     image = Image(data, grid=grid)
     return image, channels
+
+# def read_images(
+#     sample: Union[PathStr, Dict[str, PathStr]], names: Set[str], device: torch.device
+# ) -> Tuple[Image, Dict[str, Tuple[int, int]]]:
+#     r"""Read image data from input files."""
+#     data = None
+#     grid = None
+#     if isinstance(sample, (Path, str)):
+#         sample = {"img": sample}
+#     img_path = sample.get("img")
+#     seg_path = sample.get("seg")
+#     sdf_path = sample.get("sdf")
+#     for path in (img_path, seg_path, sdf_path):
+#         if not path:
+#             continue
+#         grid = Grid.from_file(path).align_corners_(True)
+#         break
+#     else:
+#         raise ValueError("One of 'img', 'seg', or 'sdf' input image file paths is required")
+#     assert grid is not None
+#     dtype = torch.float32
+#     channels = {}
+#     if "img" in names:
+#         temp = Image.read(img_path, dtype=dtype, device=device)
+#         data = append_data(data, channels, "img", temp.tensor())
+#     if "seg" in names:
+#         if seg_path is None:
+#             raise ValueError("Missing segmentation label image file path")
+#         temp = Image.read(seg_path, dtype=torch.int64, device=device)
+#         temp_grid = temp.grid()
+#         num_classes = int(temp.max()) + 1
+#         temp = temp.tensor().unsqueeze(0)
+#         temp = U.as_one_hot_tensor(temp, num_classes).to(dtype=dtype)
+#         temp = temp.squeeze(0)
+#         temp = Image(temp, grid=temp_grid).sample(grid)
+#         data = append_data(data, channels, "seg", temp.tensor())
+#     if "sdf" in names:
+#         if sdf_path is None:
+#             raise ValueError("Missing segmentation boundary signed distance field file path")
+#         temp = Image.read(sdf_path, dtype=dtype, device=device)
+#         temp = temp.sample(grid)
+#         data = append_data(data, channels, "sdf", temp.tensor())
+#     if data is None:
+#         if img_path is None:
+#             raise ValueError("Missing intensity image file path")
+#         data = Image.read(img_path, dtype=dtype, device=device)
+#         channels = {"img": (0, 1)}
+#     image = Image(data, grid=grid)
+#     return image, channels
 
 
 def get_device_config(

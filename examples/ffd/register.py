@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 import json
 import yaml
-
+import os
 import torch
 import torch.cuda
 from torch import Tensor
@@ -20,7 +20,7 @@ from deepali.utils.cli import ArgumentParser, Args, main_func
 from deepali.utils.cli import configure_logging, cuda_visible_devices
 from deepali.utils.cli import filter_warning_of_experimental_named_tensors_feature
 
-from .pairwise import register_pairwise
+from examples.ffd.pairwise import register_pairwise
 
 log = logging.getLogger()
 
@@ -34,10 +34,10 @@ def parser(**kwargs) -> ArgumentParser:
         "-c", "--config", help="Configuration file", default=Path(__file__).parent / "params.yaml"
     )
     parser.add_argument(
-        "-t", "--target", "--target-img", dest="target_img", help="Fixed target image"
+        "-t", "--target", "--target-img", dest="target_img", help="Fixed target image",  default= '/home/pti/Documents/datasets/uk-bio-dummy/1853017/A_wat.nii.gz'
     )
     parser.add_argument(
-        "-s", "--source", "--source-img", dest="source_img", help="Moving source image"
+        "-s", "--source", "--source-img", dest="source_img", help="Moving source image",  default= '/home/pti/Documents/datasets/uk-bio-dummy/1277174/A_wat.nii.gz'
     )
     parser.add_argument("--target-seg", help="Fixed target segmentation label image")
     parser.add_argument("--source-seg", help="Moving source segmentation label image")
@@ -47,6 +47,7 @@ def parser(**kwargs) -> ArgumentParser:
         "--output-transform",
         dest="output_transform",
         help="Output transformation parameters",
+        default='/home/pti/Documents/datasets/uk-bio-dummy/1277174/defda.nii.gz '
     )
     parser.add_argument(
         "-w",
@@ -55,6 +56,7 @@ def parser(**kwargs) -> ArgumentParser:
         "--output-img",
         dest="warped_img",
         help="Deformed source image",
+        default= '/home/pti/Documents/datasets/uk-bio-dummy/1277174/deep_ali.nii.gz '
     )
     parser.add_argument(
         "--warped-seg",
@@ -66,7 +68,7 @@ def parser(**kwargs) -> ArgumentParser:
         "--device",
         help="Device on which to execute registration",
         choices=("cpu", "cuda"),
-        default="cpu",
+        default="cuda",
     )
     parser.add_argument("--debug-dir", help="Output directory for intermediate files")
     parser.add_argument(
@@ -93,6 +95,8 @@ def init(args: Args) -> int:
         if not torch.cuda.is_available():
             log.error("Cannot use --device 'cuda' when torch.cuda.is_available() is False")
             return 1
+        # TODO: change this
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(0)
         gpu_ids = cuda_visible_devices()
         if len(gpu_ids) != 1:
             log.error("CUDA_VISIBLE_DEVICES must be set to one GPU")
@@ -107,14 +111,23 @@ def func(args: Args) -> int:
     device = torch.device("cuda:0" if args.device == "cuda" else "cpu")
     start = timer()
     transform = register_pairwise(
-        target={"img": args.target_img, "seg": args.target_seg},
-        source={"img": args.source_img, "seg": args.source_seg},
+        target={"img": args.target_img},
+        source={"img": args.source_img},
         config=config,
         outdir=args.debug_dir,
         device=args.device,
         verbose=args.verbose,
         debug=args.debug,
     )
+    # transform = register_pairwise(
+    #     target={"img": args.target_img, "seg": args.target_seg},
+    #     source={"img": args.source_img, "seg": args.source_seg},
+    #     config=config,
+    #     outdir=args.debug_dir,
+    #     device=args.device,
+    #     verbose=args.verbose,
+    #     debug=args.debug,
+    # )
     log.info(f"Elapsed time: {timer() - start:.3f}s")
     if args.warped_img:
         target_grid = Grid.from_file(args.target_img)

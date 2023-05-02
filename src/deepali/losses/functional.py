@@ -1,17 +1,16 @@
 r"""Loss functions, evaluation metrics, and related utilities."""
 
 import itertools
-from typing import Protocol, Optional, Sequence, Tuple, Union
+from typing import Optional, Sequence, Union
 
 import math
 
 import torch
 from torch import Tensor
 from torch.nn.functional import binary_cross_entropy_with_logits, logsigmoid
-import torch.nn.functional as F
 
 from ..core.bspline import evaluate_cubic_bspline
-from ..core.enum import SpatialDerivativeKeys, SpatialDim
+from ..core.enum import SpatialDerivativeKeys
 from ..core.grid import Grid
 from ..core.image import avg_pool, dot_channels, rand_sample, spatial_derivatives
 from ..core.flow import denormalize_flow
@@ -29,7 +28,6 @@ __all__ = (
     "dice_loss",
     "kld_loss",
     "lcc_loss",
-    "mae_loss",
     "mse_loss",
     "ssd_loss",
     "mi_loss",
@@ -54,15 +52,7 @@ __all__ = (
     "inverse_consistency_loss",
     "masked_loss",
     "reduce_loss",
-    "wlcc_loss",
 )
-
-
-class ElementwiseLoss(Protocol):
-    r"""Type annotation of a eleemntwise loss function."""
-
-    def __call__(self, input: Tensor, target: Tensor, reduction: str = "mean") -> Tensor:
-        ...
 
 
 def label_smoothing(
@@ -529,7 +519,7 @@ def kld_loss(mean: Tensor, logvar: Tensor, reduction: str = "mean") -> Tensor:
 
 
 def lcc_loss(
-    source: Tensor,
+    input: Tensor,
     target: Tensor,
     mask: Optional[Tensor] = None,
     kernel_size: ScalarOrTuple[int] = 7,
@@ -538,42 +528,22 @@ def lcc_loss(
 ) -> Tensor:
     r"""Local normalized cross correlation.
 
-    References:
-    - Avants et al., 2008, Symmetric Diffeomorphic Image Registration with Cross Correlation:
-        Evaluating Automated Labeling of Elderly and Neurodegenerative Brain,
-        doi:10.1016/j.media.2007.06.004.
-
     Args:
-        source: Source image sampled on ``target`` grid.
-        target: Target image with same shape as ``source``.
-        mask: Multiplicative mask tensor with same shape as ``source``.
+        input: Source image sampled on ``target`` grid.
+        target: Target image with same shape as ``input``.
+        mask: Multiplicative mask tensor with same shape as ``input``.
         kernel_size: Local rectangular window size in number of grid points.
         epsilon: Small constant added to denominator to avoid division by zero.
-        reduction: Whether to compute "mean" or "sum" over all grid points. If "none", output
-            tensor shape is equal to the shape of the input tensors given an odd kernel size.
+        reduction: Whether to compute "mean" or "sum" over all grid points. If "none",
+            output tensor shape is equal to the shape of the input tensors given an odd
+            kernel size.
 
     Returns:
         Negative local normalized cross correlation plus one.
 
     """
 
-    if not isinstance(source, Tensor):
-        raise TypeError("lcc_loss() 'source' must be tensor")
-    if not isinstance(target, Tensor):
-        raise TypeError("lcc_loss() 'target' must be tensor")
-    if source.shape != target.shape:
-        raise ValueError("lcc_loss() 'source' must have same shape as 'target'")
-
-    def local_sum(data: Tensor) -> Tensor:
-        return avg_pool(
-            data,
-            kernel_size=kernel_size,
-            stride=1,
-            padding=None,
-            divisor_override=1,
-        )
-
-    def local_mean(data: Tensor) -> Tensor:
+    def pool(data: Tensor) -> Tensor:
         return avg_pool(
             data,
             kernel_size=kernel_size,
@@ -582,274 +552,24 @@ def lcc_loss(
             count_include_pad=False,
         )
 
-    source = source.float()
+    if not torch.is_tensor(input):
+        raise TypeError("lcc_loss() 'input' must be tensor")
+    if not torch.is_tensor(target):
+        raise TypeError("lcc_loss() 'target' must be tensor")
+    if input.shape != target.shape:
+        raise ValueError("lcc_loss() 'input' must have same shape as 'target'")
+    input = input.float()
     target = target.float()
-
-    source_mean = local_mean(source)
-    target_mean = local_mean(target)
-
-    x = source.sub(source_mean)
-    y = target.sub(target_mean)
-
-    a = local_sum(x.mul(y))
-    b = local_sum(x.square())
-    c = local_sum(y.square())
-
-    loss = a.square_().div_(b.mul_(c).add_(epsilon)).neg_().add_(1)
+    x = input - pool(input)
+    y = target - pool(target)
+    a = pool(x.mul(y))
+    b = pool(x.square())
+    c = pool(y.square())
+    lcc = a.square().div_(b.mul(c).add_(epsilon))  # A^2 / BC cf. Avants et al., 2007, eq 5
+    loss = lcc.mul_(-1).add_(1)  # minimize 1 - lcc, where loss range is [0, 1]
     loss = masked_loss(loss, mask, "lcc_loss")
     loss = reduce_loss(loss, reduction, mask)
     return loss
-
-
-def wlcc_loss(
-    source: Tensor,
-    target: Tensor,
-    mask: Optional[Tensor] = None,
-    source_mask: Optional[Tensor] = None,
-    target_mask: Optional[Tensor] = None,
-    kernel_size: ScalarOrTuple[int] = 7,
-    epsilon: float = 1e-15,
-    reduction: str = "mean",
-) -> Tensor:
-    r"""Weighted local normalized cross correlation.
-
-    References:
-    - Lewis et al., 2020, Fast Learning-based Registration of Sparse 3D Clinical Images, arXiv:1812.06932.
-
-    Args:
-        source: Source image sampled on ``target`` grid.
-        target: Target image with same shape as ``source``.
-        mask: Multiplicative mask tensor ``w_c`` with same shape as ``target`` and ``source``.
-            This tensor is used for computing the weighted local correlation. If ``None`` and
-            both ``source_mask`` and ``target_mask`` are given, it is set to the product of these.
-            Otherwise, no mask is used to aggregate the local cross correlation values. When both
-            ``source_mask`` and ``target_mask`` are ``None``, but ``mask`` is not, then the specified
-            ``mask`` is used both as ``source_mask`` and ``target_mask``.
-        source_mask: Multiplicative mask tensor ``w_m`` with same shape as ``source``.
-            This tensor is used for computing the weighted local ``source`` mean. If ``None``,
-            the local mean is computed over all ``source`` elements within each local neighborhood.
-        target_mask: Multiplicative mask tensor ``w_f`` with same shape as ``source``.
-            This tensor is used for computing the weighted local ``target`` mean. If ``None``,
-            the local mean is computed over all ``target`` elements within each local neighborhood.
-        kernel_size: Local rectangular window size in number of grid points.
-        epsilon: Small constant added to denominator to avoid division by zero.
-        reduction: Whether to compute "mean" or "sum" over all grid points. If "none", output
-            tensor shape is equal to the shape of the input tensors given an odd kernel size.
-
-    Returns:
-        Negative local normalized cross correlation plus one.
-
-    """
-
-    if not isinstance(source, Tensor):
-        raise TypeError("wlcc_loss() 'source' must be tensor")
-    if not isinstance(target, Tensor):
-        raise TypeError("wlcc_loss() 'target' must be tensor")
-
-    if source.shape != target.shape:
-        raise ValueError("wlcc_loss() 'source' must have same shape as 'target'")
-
-    for t, t_name, w, w_name in zip(
-        [target, source, target],
-        ["target", "source", "target"],
-        [mask, source_mask, target_mask],
-        ["mask", "source_mask", "target_mask"],
-    ):
-        if w is None:
-            continue
-        if not isinstance(w, Tensor):
-            raise TypeError(f"wlcc_loss() '{w_name}' must be tensor")
-        if w.shape[0] not in (1, t.shape[0]):
-            raise ValueError(
-                f"wlcc_loss() '{w_name}' batch size ({w.shape[0]}) must be 1 or match '{t_name}' ({t.shape[0]})"
-            )
-        if w.shape[1] not in (1, t.shape[1]):
-            raise ValueError(
-                f"wlcc_loss() '{w_name}' number of channels ({w.shape[1]}) must be 1 or match '{t_name}' ({t.shape[1]})"
-            )
-        if w.shape[2:] != t.shape[2:]:
-            raise ValueError(
-                f"wlcc_loss() '{w_name}' grid shape ({w.shape[2:]}) must match '{t_name}' ({t.shape[2:]})"
-            )
-
-    def local_sum(data: Tensor) -> Tensor:
-        return avg_pool(
-            data,
-            kernel_size=kernel_size,
-            stride=1,
-            padding=None,
-            divisor_override=1,
-        )
-
-    def local_mean(data: Tensor, weight: Optional[Tensor] = None) -> Tensor:
-        if weight is None:
-            return avg_pool(
-                data,
-                kernel_size=kernel_size,
-                stride=1,
-                padding=None,
-                count_include_pad=False,
-            )
-        a = local_sum(data.mul(weight))
-        b = local_sum(weight).add_(epsilon)
-        return a.div_(b)
-
-    if mask is not None and source_mask is None and target_mask is None:
-        source_mask = mask.float()
-        target_mask = source_mask
-    else:
-        if source_mask is not None:
-            source_mask = source_mask.float()
-        if target_mask is not None:
-            target_mask = target_mask.float()
-
-    source = source.float()
-    target = target.float()
-
-    source_mean = local_mean(source, source_mask)
-    target_mean = local_mean(target, target_mask)
-
-    x = source.sub(source_mean)
-    y = target.sub(target_mean)
-
-    if mask is None and source_mask is not None and target_mask is not None:
-        mask = source_mask.mul(target_mask)
-    if mask is not None:
-        x = x.mul_(mask)
-        y = y.mul_(mask)
-
-    a = local_sum(x.mul(y))
-    b = local_sum(x.square())
-    c = local_sum(y.square())
-
-    loss = a.square_().div_(b.mul_(c).add_(epsilon)).neg_().add_(1)
-    loss = masked_loss(loss, mask, name="wlcc_loss")
-    loss = reduce_loss(loss, reduction, mask)
-    return loss
-
-
-def huber_loss(
-    input: Tensor,
-    target: Tensor,
-    mask: Optional[Tensor] = None,
-    norm: Optional[Union[float, Tensor]] = None,
-    reduction: str = "mean",
-    delta: float = 1.0,
-) -> Tensor:
-    r"""Normalized masked Huber loss.
-
-    Args:
-        input: Source image sampled on ``target`` grid.
-        target: Target image with same shape as ``input``.
-        mask: Multiplicative mask with same shape as ``input``.
-        norm: Positive factor by which to divide loss value.
-        reduction: Whether to compute "mean" or "sum" over all grid points.
-            If "none", output tensor shape is equal to the shape of the input tensors.
-        delta: Specifies the threshold at which to change between delta-scaled L1 and L2 loss.
-
-    Returns:
-        Masked, aggregated, and normalized Huber loss.
-
-    """
-
-    def loss_fn(input: Tensor, target: Tensor, reduction: str = "mean") -> Tensor:
-        return F.huber_loss(input, target, reduction=reduction, delta=delta)
-
-    return elementwise_loss(
-        "huber_loss", loss_fn, input, target, mask=mask, norm=norm, reduction=reduction
-    )
-
-
-def smooth_l1_loss(
-    input: Tensor,
-    target: Tensor,
-    mask: Optional[Tensor] = None,
-    norm: Optional[Union[float, Tensor]] = None,
-    reduction: str = "mean",
-    beta: float = 1.0,
-) -> Tensor:
-    r"""Normalized masked smooth L1 loss.
-
-    Args:
-        input: Source image sampled on ``target`` grid.
-        target: Target image with same shape as ``input``.
-        mask: Multiplicative mask with same shape as ``input``.
-        norm: Positive factor by which to divide loss value.
-        reduction: Whether to compute "mean" or "sum" over all grid points.
-            If "none", output tensor shape is equal to the shape of the input tensors.
-        delta: Specifies the threshold at which to change between delta-scaled L1 and L2 loss.
-
-    Returns:
-        Masked, aggregated, and normalized smooth L1 loss.
-
-    """
-
-    def loss_fn(input: Tensor, target: Tensor, reduction: str = "mean") -> Tensor:
-        return F.smooth_l1_loss(input, target, reduction=reduction, beta=beta)
-
-    return elementwise_loss(
-        "smooth_l1_loss", loss_fn, input, target, mask=mask, norm=norm, reduction=reduction
-    )
-
-
-def l1_loss(
-    input: Tensor,
-    target: Tensor,
-    mask: Optional[Tensor] = None,
-    norm: Optional[Union[float, Tensor]] = None,
-    reduction: str = "mean",
-) -> Tensor:
-    r"""Normalized mean absolute error.
-
-    Args:
-        input: Source image sampled on ``target`` grid.
-        target: Target image with same shape as ``input``.
-        mask: Multiplicative mask with same shape as ``input``.
-        norm: Positive factor by which to divide loss value.
-        reduction: Whether to compute "mean" or "sum" over all grid points.
-            If "none", output tensor shape is equal to the shape of the input tensors.
-
-    Returns:
-        Normalized mean absolute error.
-
-    """
-
-    def loss_fn(input: Tensor, target: Tensor, reduction: str = "mean") -> Tensor:
-        return F.l1_loss(input, target, reduction=reduction)
-
-    return elementwise_loss(
-        "l1_loss", loss_fn, input, target, mask=mask, norm=norm, reduction=reduction
-    )
-
-
-def mae_loss(
-    input: Tensor,
-    target: Tensor,
-    mask: Optional[Tensor] = None,
-    norm: Optional[Union[float, Tensor]] = None,
-    reduction: str = "mean",
-) -> Tensor:
-    r"""Normalized mean absolute error.
-
-    Args:
-        input: Source image sampled on ``target`` grid.
-        target: Target image with same shape as ``input``.
-        mask: Multiplicative mask with same shape as ``input``.
-        norm: Positive factor by which to divide loss value.
-        reduction: Whether to compute "mean" or "sum" over all grid points.
-            If "none", output tensor shape is equal to the shape of the input tensors.
-
-    Returns:
-        Normalized mean absolute error.
-
-    """
-
-    def loss_fn(input: Tensor, target: Tensor, reduction: str = "mean") -> Tensor:
-        return F.l1_loss(input, target, reduction=reduction)
-
-    return elementwise_loss(
-        "mae_loss", loss_fn, input, target, mask=mask, norm=norm, reduction=reduction
-    )
 
 
 def mse_loss(
@@ -969,9 +689,7 @@ def mi_loss(
     if num_bins is None:
         num_bins = 64
     elif num_bins == "auto":
-        raise NotImplementedError(
-            "mi_loss() automatically setting num_bins based on dynamic range of input"
-        )
+        raise NotImplementedError("mi_loss() automatically setting num_bins based on dynamic range of input")
 
     # Flatten spatial dimensions of inputs
     shape = target.shape
@@ -1254,7 +972,7 @@ def curvature_loss(
         # No loss for homogeneous coordinate transformations
         if reduction == "none":
             raise NotImplementedError(
-                "curvature_loss() not implemented for linear transformation and reduction='none'"
+                "curvature_loss() not implemented for linear transformation and 'reduction'='none'"
             )
         return torch.tensor(0, dtype=u.dtype, device=u.device)
     D = u.shape[1]
@@ -1293,134 +1011,21 @@ def divergence_loss(
         # No loss for homogeneous coordinate transformations
         if reduction == "none":
             raise NotImplementedError(
-                "divergence_loss() not implemented for linear transformation and reduction='none'"
+                "div_loss() not implemented for linear transformation and 'reduction'='none'"
             )
         return torch.tensor(0, dtype=u.dtype, device=u.device)
     D = u.shape[1]
     if u.ndim - 2 != D:
-        raise ValueError(f"divergence_loss() 'u' must be tensor of shape (N, {u.ndim - 2}, ..., X)")
-    derivs = spatial_derivatives(u, mode=mode, order=1, sigma=sigma, spacing=spacing)
-    derivs = torch.cat([deriv.unsqueeze(-1) for deriv in derivs.values()], dim=-1)
-    loss = derivs.sum(dim=-1)
-    loss = loss.abs_() if q < 2 else loss.pow_(q)
+        raise ValueError(f"div_loss() 'u' must be tensor of shape (N, {u.ndim - 2}, ..., X)")
+    which = SpatialDerivativeKeys.unmixed(ndim=D, order=1)
+    loss = grad_loss(u, p=0, spacing=spacing, sigma=sigma, mode=mode, which=which, reduction="none")
+    loss = loss.abs_() if q == 1 else loss.pow_(q)
     loss = reduce_loss(loss, reduction)
     return loss
 
 
-def lame_parameters(
-    material_name: Optional[str] = None,
-    first_parameter: Optional[float] = None,
-    second_parameter: Optional[float] = None,
-    shear_modulus: Optional[float] = None,
-    poissons_ratio: Optional[float] = None,
-    youngs_modulus: Optional[float] = None,
-) -> Tuple[float, float]:
-    r"""Get Lame parameters of linear elasticity given different quantities.
-
-    Args:
-        material_name: Name of material preset. Cannot be used in conjunction with other arguments.
-        first_parameter: Lame's first parameter.
-        second_parameter: Lame's second parameter, i.e., shear modulus.
-        shear_modulus: Shear modulus, i.e., Lame's second parameter.
-        poissons_ratio: Poisson's ratio.
-        youngs_modulus: Young's modulus.
-
-    Returns:
-        lambda: Lame's first parameter.
-        mu: Lame's second parameter.
-
-    """
-    RUBBER_POISSONS_RATIO = 0.4999
-    RUBBER_SHEAR_MODULUS = 0.0006
-    # Derive unspecified Lame parameters from any combination of two given quantities
-    # (cf. conversion table at https://en.wikipedia.org/wiki/Young%27s_modulus#External_links)
-    kwargs = {
-        name: value
-        for name, value in zip(
-            [
-                "first_parameter",
-                "second_parameter",
-                "shear_modulus",
-                "poissons_ratio",
-                "youngs_modulus",
-            ],
-            [first_parameter, second_parameter, poissons_ratio, youngs_modulus, shear_modulus],
-        )
-        if value is not None
-    }
-    # Default values for different materials (cf. Wikipedia pages for Poisson's ratio and shear modulus)
-    if material_name:
-        if kwargs:
-            raise ValueError(
-                "lame_parameters() 'material_name' cannot be specified in combination with other quantities"
-            )
-        if material_name == "rubber":
-            poissons_ratio = RUBBER_POISSONS_RATIO
-            shear_modulus = RUBBER_SHEAR_MODULUS
-        else:
-            raise ValueError(f"lame_parameters() unknown 'material_name': {material_name}")
-    elif len(kwargs) != 2:
-        raise ValueError(
-            "lame_parameters() specify 'material_name' or exactly two parameters, got: "
-            + ", ".join(f"{k}={v}" for k, v in kwargs.items())
-        )
-    if second_parameter is None:
-        second_parameter = shear_modulus
-    elif shear_modulus is None:
-        shear_modulus = second_parameter
-    else:
-        raise ValueError(
-            "lame_parameters() 'second_parameter' and 'shear_modulus' are mutually exclusive"
-        )
-    if first_parameter is None:
-        if shear_modulus is None:
-            if poissons_ratio is not None and youngs_modulus is not None:
-                first_parameter = (
-                    poissons_ratio * youngs_modulus / ((1 + poissons_ratio)(1 - 2 * poissons_ratio))
-                )
-                second_parameter = youngs_modulus / (2 * (1 + poissons_ratio))
-        elif youngs_modulus is None:
-            if poissons_ratio is None:
-                poissons_ratio = RUBBER_POISSONS_RATIO
-            first_parameter = 2 * shear_modulus * poissons_ratio / (1 - 2 * poissons_ratio)
-        else:
-            first_parameter = (
-                shear_modulus
-                * (youngs_modulus - 2 * shear_modulus)
-                / (3 * shear_modulus - youngs_modulus)
-            )
-    elif second_parameter is None:
-        if youngs_modulus is None:
-            if poissons_ratio is None:
-                poissons_ratio = RUBBER_POISSONS_RATIO
-            second_parameter = first_parameter * (1 - 2 * poissons_ratio) / (2 * poissons_ratio)
-        else:
-            r = math.sqrt(
-                youngs_modulus**2
-                + 9 * first_parameter**2
-                + 2 * youngs_modulus * first_parameter
-            )
-            second_parameter = youngs_modulus - 3 * first_parameter + r / 4
-    if first_parameter is None or second_parameter is None:
-        raise NotImplementedError(
-            "lame_parameters() deriving Lame parameters from: "
-            + ", ".join(f"'{name}'" for name in kwargs.keys())
-        )
-    if first_parameter < 0:
-        raise ValueError("lame_parameter() 'first_parameter' is negative")
-    if second_parameter < 0:
-        raise ValueError("lame_parameter() 'second_parameter' is negative")
-    return first_parameter, second_parameter
-
-
 def elasticity_loss(
     u: Tensor,
-    material_name: Optional[str] = None,
-    first_parameter: Optional[float] = None,
-    second_parameter: Optional[float] = None,
-    shear_modulus: Optional[float] = None,
-    poissons_ratio: Optional[float] = None,
-    youngs_modulus: Optional[float] = None,
     spacing: Optional[Array] = None,
     sigma: Optional[float] = None,
     mode: str = "sobel",
@@ -1428,18 +1033,13 @@ def elasticity_loss(
 ) -> Tensor:
     r"""Loss term based on Navier-Cauchy PDE of linear elasticity.
 
-    References:
-    - Fischer & Modersitzki, 2004, A unified approach to fast image registration and a new curvature based registration technique.
+    This linear elasticity loss includes only the term based on 1st order derivatives. The term of the
+    Laplace operator, i.e., sum of unmixed 2nd order derivatives, is equivalent to the ``curvature_loss()``.
+    This loss can be combined with the curvature regularization term to form a linear elasticity loss.
 
     Args:
         u: Batch of vector fields as tensor of shape ``(N, D, ..., X)``. When a tensor with less than
             four dimensions is given, it is assumed to be a linear transformation and zero is returned.
-        material_name: Name of material preset. Cannot be used in conjunction with other arguments.
-        first_parameter: Lame's first parameter.
-        second_parameter: Lame's second parameter, i.e., shear modulus.
-        shear_modulus: Shear modulus, i.e., Lame's second parameter.
-        poissons_ratio: Poisson's ratio.
-        youngs_modulus: Young's modulus.
         spacing: Sampling grid spacing.
         sigma: Standard deviation of Gaussian in grid units (cf. ``spatial_derivatives()``).
         mode: Method used to approximate spatial derivatives (cf. ``spatial_derivatives()``).
@@ -1449,34 +1049,26 @@ def elasticity_loss(
         Linear elasticity loss of vector field.
 
     """
-    lambd, mu = lame_parameters(
-        material_name=material_name,
-        first_parameter=first_parameter,
-        second_parameter=second_parameter,
-        shear_modulus=shear_modulus,
-        poissons_ratio=poissons_ratio,
-        youngs_modulus=youngs_modulus,
-    )
     if u.ndim < 4:
         # No loss for homogeneous coordinate transformations
         if reduction == "none":
             raise NotImplementedError(
-                "elasticity_loss() not implemented for linear transformation and reduction='none'"
+                "elasticity_loss() not implemented for linear transformation and 'reduction'='none'"
             )
         return torch.tensor(0, dtype=u.dtype, device=u.device)
+    N = u.shape[0]
     D = u.shape[1]
     if u.ndim - 2 != D:
         raise ValueError(f"elasticity_loss() 'u' must be tensor of shape (N, {u.ndim - 2}, ..., X)")
     derivs = spatial_derivatives(u, mode=mode, order=1, sigma=sigma, spacing=spacing)
-    derivs = [derivs[str(SpatialDim(i))] for i in range(D)]
-    loss = derivs[0].narrow(1, 0, 1).clone()
-    for i in range(1, D):
-        loss = loss.add_(derivs[i].narrow(1, i, 1))
-    loss = loss.square_().mul_(lambd / 2)
-    for j, k in itertools.product(range(D), repeat=2):
-        temp = derivs[j].narrow(1, k, 1).add(derivs[k].narrow(1, j, 1))
-        loss = loss.add_(temp.square_().mul_(mu / 4))
-    loss = reduce_loss(loss, reduction)
+    derivs = torch.cat([deriv.unsqueeze(-1) for deriv in derivs.values()], dim=-1)
+    loss = torch.zeros((N,) + u.shape[2:], dtype=derivs.dtype, device=derivs.device)
+    for a, b in itertools.product(range(D), repeat=2):
+        loss += (0.5 * (derivs[:, a, ..., b] + derivs[:, b, ..., a])).square()
+    if reduction == "none":
+        loss = loss.unsqueeze(1)
+    else:
+        loss = reduce_loss(loss, reduction)
     return loss
 
 
@@ -1589,50 +1181,6 @@ def inverse_consistency_loss(
             count = (mask != 0).sum()
         error /= count
     return error
-
-
-def elementwise_loss(
-    name: str,
-    loss_fn: ElementwiseLoss,
-    input: Tensor,
-    target: Tensor,
-    mask: Optional[Tensor] = None,
-    norm: Optional[Union[float, Tensor]] = None,
-    reduction: str = "mean",
-) -> Tensor:
-    r"""Evaluate, aggregate, and normalize elementwise loss, optionally within masked region.
-
-    Args:
-        input: Source image sampled on ``target`` grid.
-        target: Target image with same shape as ``input``.
-        mask: Multiplicative mask with same shape as ``input``.
-        norm: Positive factor by which to divide loss value.
-        reduction: Whether to compute "mean" or "sum" over all grid points.
-            If "none", output tensor shape is equal to the shape of the input tensors.
-
-    Returns:
-        Aggregated normalized loss value.
-
-    """
-    if not isinstance(input, Tensor):
-        raise TypeError(f"{name}() 'input' must be tensor")
-    if not isinstance(target, Tensor):
-        raise TypeError(f"{name}() 'target' must be tensor")
-    if input.shape != target.shape:
-        raise ValueError(f"{name}() 'input' must have same shape as 'target'")
-    if mask is None:
-        loss = loss_fn(input, target, reduction=reduction)
-    else:
-        loss = loss_fn(input, target, reduction="none")
-        loss = masked_loss(loss, mask, name)
-        loss = reduce_loss(loss, reduction, mask)
-    if norm is not None:
-        norm = torch.as_tensor(norm, dtype=loss.dtype, device=loss.device).squeeze()
-        if not norm.ndim == 0:
-            raise ValueError(f"{name}() 'norm' must be scalar")
-        if norm > 0:
-            loss = loss.div_(norm)
-    return loss
 
 
 def masked_loss(
